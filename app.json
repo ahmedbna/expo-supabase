@@ -1,0 +1,63 @@
+{
+  "expo": {
+    "name": "bna",
+    "slug": "bna",
+    "scheme": "bna",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "icon": "./assets/bna.icon",
+      "supportsTablet": true,
+      "bundleIdentifier": "com.bna.ai"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#FAD40B",
+        "foregroundImage": "./assets/images/logo.png",
+        "backgroundImage": "./assets/images/logo.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "package": "com.bna.ai"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/logo.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#FAD40B",
+          "dark": {
+            "backgroundColor": "#FAD40B"
+          }
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "compileSdkVersion": 35,
+            "targetSdkVersion": 35,
+            "buildToolsVersion": "35.0.0",
+            "minSdkVersion": 24,
+            "ndkVersion": "28.0.13004108",
+            "manifestPlaceholders": {
+              "expo.jsEngine": "hermes"
+            }
+          },
+          "ios": {
+            "deploymentTarget": "16.0"
+          }
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    }
+  }
+}

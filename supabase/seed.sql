@@ -1,0 +1,28 @@
+-- seed.sql
+-- Local-only seed data. Runs after every `supabase db reset`.
+-- Keep this idempotent — use ON CONFLICT DO NOTHING everywhere.
+
+-- Example: create a demo user so you can log in immediately.
+-- Password: DemoPass123
+-- (We insert directly into auth.users with a pre-hashed password.
+--  In production, never do this — always go through the sign-up API.)
+
+-- Uncomment if you want a seeded demo account:
+-- insert into auth.users (
+--   id, instance_id, email, encrypted_password, email_confirmed_at,
+--   raw_app_meta_data, raw_user_meta_data, aud, role, created_at, updated_at
+-- )
+-- values (
+--   '00000000-0000-0000-0000-000000000001',
+--   '00000000-0000-0000-0000-000000000000',
+--   'demo@bna.local',
+--   crypt('DemoPass123', gen_salt('bf')),
+--   now(),
+--   '{"provider":"email","providers":["email"]}'::jsonb,
+--   '{}'::jsonb,
+--   'authenticated',
+--   'authenticated',
+--   now(),
+--   now()
+-- )
+-- on conflict (id) do nothing;
