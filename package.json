@@ -7,15 +7,13 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "lint": "expo lint",
-    "db:start": "supabase start",
-    "db:stop": "supabase stop",
-    "db:status": "supabase status",
-    "db:reset": "supabase db reset",
-    "db:push": "supabase db push",
-    "db:diff": "supabase db diff -f",
+    "init": "node scripts/init.js",
+    "dev": "node scripts/dev.js",
+    "db:new": "node scripts/new-migration.js",
     "db:types": "node scripts/gen-types.js",
     "db:check-rls": "node scripts/check-rls.js",
-    "db:push:safe": "npm run db:check-rls && supabase db push"
+    "db:push": "supabase db push",
+    "config:push": "supabase config push"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.2",

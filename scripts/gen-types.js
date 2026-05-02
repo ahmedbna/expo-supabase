@@ -2,38 +2,40 @@
 /**
  * scripts/gen-types.js
  *
- * Regenerate supabase/types.ts from the live local schema.
- * Equivalent to `npm run db:types`, but with nicer output and a
- * check that supabase is actually running first.
+ * Regenerate supabase/types.ts from the live remote schema.
+ * Wired into `npm run db:types` and called automatically by `npm run dev`.
+ *
+ * No Docker — uses the linked hosted project as the source of truth.
  */
 
 const { execSync } = require('child_process');
 const { writeFileSync } = require('fs');
 const { join } = require('path');
 
-const OUT = join(__dirname, '..', 'supabase', 'types.ts');
+const ROOT = join(__dirname, '..');
+const OUT = join(ROOT, 'supabase', 'types.ts');
 
+console.log('→ Generating types from remote schema…');
+let types;
 try {
-  execSync('supabase status', { stdio: 'ignore' });
+  types = execSync('npx supabase gen types typescript --linked', {
+    cwd: ROOT,
+    encoding: 'utf8',
+  });
 } catch {
   console.error(
-    "Supabase isn't running locally. Start it first:\n   npm run db:start",
+    "✗ Could not generate types. Make sure your project is linked:\n" +
+      '  npm run init',
   );
   process.exit(1);
 }
 
-console.log('→ Generating types from local schema...');
-const types = execSync('supabase gen types typescript --local', {
-  encoding: 'utf8',
-});
-
-const header = `// supabase/types.ts
-//
-// GENERATED FILE — do not edit by hand.
-// Regenerate with: npm run db:types
-// Source: supabase/migrations/*.sql
-
-`;
+const header =
+  '// supabase/types.ts\n' +
+  '//\n' +
+  '// GENERATED — do not edit by hand.\n' +
+  '// Regenerate with: npm run db:types\n' +
+  '// Source: linked Supabase project\n\n';
 
 writeFileSync(OUT, header + types);
-console.log(`Wrote ${OUT}`);
+console.log(`✓ Wrote ${OUT}`);

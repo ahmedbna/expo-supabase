@@ -6,7 +6,7 @@ import type { Database } from '@/supabase/types';
 
 export type User = Database['public']['Tables']['users']['Row'];
 
-/** Client-visible password rules */
+/** Client-side password rules. RLS doesn't enforce these, the server does. */
 function validatePasswordRequirements(password: string): void {
   if (!password || password.length < 8) {
     throw new ApiError('Password must be at least 8 characters long');
@@ -39,9 +39,37 @@ export const auth = {
     if (error) throw new ApiError(error.message, error.code, error);
   },
 
-  /** Guest / anonymous sign-in. Creates a real auth.users row. */
+  /**
+   * Guest / anonymous sign-in. Creates a real auth.users row with
+   * `is_anonymous = true`. The handle_new_user trigger (migration 0004)
+   * creates the matching public.users profile automatically.
+   *
+   * Requires `enable_anonymous_sign_ins = true` in supabase/config.toml,
+   * which `npm run dev` syncs to your hosted project.
+   */
   async signInAnonymously() {
     const { error } = await supabase.auth.signInAnonymously();
+    if (error) throw new ApiError(error.message, error.code, error);
+  },
+
+  /**
+   * Promote the currently-signed-in anonymous user to a permanent
+   * email-based account. The same auth.uid stays the same — all of
+   * their existing rows (posts, settings, whatever) keep working.
+   *
+   * Requires the user to verify the email (Supabase sends a confirm
+   * link by default), then call `setPasswordForUpgradedUser` once
+   * they've confirmed.
+   */
+  async upgradeAnonymousToEmail(email: string) {
+    const { error } = await supabase.auth.updateUser({ email });
+    if (error) throw new ApiError(error.message, error.code, error);
+  },
+
+  /** Set a password on an upgraded (formerly anonymous) account. */
+  async setPasswordForUpgradedUser(password: string) {
+    validatePasswordRequirements(password);
+    const { error } = await supabase.auth.updateUser({ password });
     if (error) throw new ApiError(error.message, error.code, error);
   },
 
@@ -52,8 +80,9 @@ export const auth = {
   },
 
   /**
-   * `loggedInUser` query — returns the full public.users row for the current session, or null when not
-   * authenticated. Returns null (instead of throwing)
+   * `loggedInUser` query — returns the full public.users row for the
+   * current session, or null when not authenticated. Returns null
+   * (instead of throwing) so screens can render an unauth state.
    */
   async loggedInUser(): Promise<User | null> {
     const userId = await getUserIdOrNull();
@@ -67,5 +96,12 @@ export const auth = {
 
     if (error) throw new ApiError(error.message, error.code, error);
     return data;
+  },
+
+  /** True if the current session is an anonymous user. */
+  async isAnonymous(): Promise<boolean> {
+    const { data } = await supabase.auth.getUser();
+    // The `is_anonymous` flag lives on the JWT app_metadata.
+    return data.user?.is_anonymous ?? false;
   },
 };

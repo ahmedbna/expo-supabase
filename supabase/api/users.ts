@@ -8,7 +8,7 @@ export type User = Database['public']['Tables']['users']['Row'];
 export type UserUpdate = Database['public']['Tables']['users']['Update'];
 
 export const users = {
-  /** Mirror of `get` — the current user's full profile. */
+  /** The current user's full profile. Throws if not authenticated. */
   async get(): Promise<User> {
     const userId = await requireUserId();
     const { data, error } = await supabase
@@ -20,7 +20,7 @@ export const users = {
     return data;
   },
 
-  /** Mirror of `getbyemail` — look up a profile by email. */
+  /** Look up a profile by email. Requires auth. */
   async getByEmail(email: string): Promise<User | null> {
     await requireUserId();
     const { data, error } = await supabase
@@ -32,7 +32,7 @@ export const users = {
     return data;
   },
 
-  /** Mirror of `getAll` — everyone except the current user, capped at 100. */
+  /** Everyone except the current user, capped at 100. */
   async getAll(): Promise<User[]> {
     const userId = await requireUserId();
     const { data, error } = await supabase
@@ -44,15 +44,15 @@ export const users = {
     return data ?? [];
   },
 
-  /** Mirror of `getId` — just the current user's id. */
+  /** Just the current user's id. */
   async getId(): Promise<string> {
     return requireUserId();
   },
 
   /**
-   * Mirror of `update` — partial update on the current user. Only the
-   * fields exposed here can be changed by the client. RLS enforces
-   * that the row id matches auth.uid() too.
+   * Partial update on the current user. Only the fields exposed here
+   * can be changed by the client. RLS enforces that the row id matches
+   * auth.uid() too.
    */
   async update(patch: {
     name?: string;
@@ -72,12 +72,19 @@ export const users = {
   /**
    * Subscribe to realtime changes on the current user's row.
    * Returns an unsubscribe function — always call it in cleanup.
+   *
+   * Silently no-ops if the user isn't authenticated when called, so it's
+   * safe to wire into a component's useEffect without extra guards.
    */
   subscribeToSelf(onChange: (user: User) => void): () => void {
     let channel: ReturnType<typeof supabase.channel> | null = null;
+    let cancelled = false;
 
     (async () => {
-      const userId = await requireUserId();
+      const { data } = await supabase.auth.getUser();
+      const userId = data.user?.id;
+      if (!userId || cancelled) return;
+
       channel = supabase
         .channel(`user:${userId}`)
         .on(
@@ -94,6 +101,7 @@ export const users = {
     })();
 
     return () => {
+      cancelled = true;
       if (channel) supabase.removeChannel(channel);
     };
   },

@@ -2,56 +2,77 @@
 /**
  * scripts/check-rls.js
  *
- * Safety net that fails CI / local push if any table in the `public`
- * schema has Row Level Security disabled. The anon key is client-side
- * and a single un-RLSed table is a data leak. Run this before every
- * `supabase db push` — it's already wired into `npm run db:push:safe`.
+ * Static analysis of supabase/migrations/*.sql to verify every
+ * `public.<table>` has Row Level Security enabled in some migration.
  *
- * Usage: SUPABASE_DB_URL=... node scripts/check-rls.js
+ * Why static, not live? Because we don't run a local DB. Reading the
+ * intent from the files themselves is good enough to catch the common
+ * mistake of forgetting `alter table … enable row level security`.
+ *
+ * The anon key ships with your app. A single un-RLSed table is a
+ * public data leak. This guard runs as part of the dev push loop.
  */
 
-const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
-const dbUrl = process.env.SUPABASE_DB_URL;
-if (!dbUrl) {
-  console.error(
-    'SUPABASE_DB_URL not set. Add it to .env.local (see .env.example).',
-  );
-  process.exit(1);
+const ROOT = path.resolve(__dirname, '..');
+const MIG_DIR = path.join(ROOT, 'supabase', 'migrations');
+
+if (!fs.existsSync(MIG_DIR)) {
+  console.log('✓ No migrations to check.');
+  process.exit(0);
 }
 
-const query = `
-  select tablename
-  from pg_tables
-  where schemaname = 'public'
-    and not exists (
-      select 1 from pg_class c
-      join pg_namespace n on n.oid = c.relnamespace
-      where n.nspname = 'public'
-        and c.relname = pg_tables.tablename
-        and c.relrowsecurity = true
-    );
-`;
+const files = fs
+  .readdirSync(MIG_DIR)
+  .filter((f) => f.endsWith('.sql'))
+  .sort();
 
-try {
-  const out = execSync(
-    `psql "${dbUrl}" -tAc "${query.replace(/\n/g, ' ').trim()}"`,
-    { encoding: 'utf8' },
-  ).trim();
+const combined = files
+  .map((f) => fs.readFileSync(path.join(MIG_DIR, f), 'utf8'))
+  .join('\n')
+  // Strip line comments so commented-out CREATE TABLE doesn't trigger us.
+  .replace(/--[^\n]*/g, '');
 
-  if (out) {
-    console.error('Tables without RLS enabled:');
-    out.split('\n').forEach((t) => console.error(`   - public.${t}`));
-    console.error(
-      '\nEnable RLS on every public table before pushing. Add:\n' +
-        '   alter table public.<tablename> enable row level security;\n' +
-        'to a new migration, plus appropriate policies.',
-    );
-    process.exit(1);
-  }
+// Tables created.
+const created = [
+  ...combined.matchAll(/\bcreate\s+table\s+(?:if\s+not\s+exists\s+)?public\.(\w+)/gi),
+].map((m) => m[1]);
 
-  console.log('All public tables have RLS enabled.');
-} catch (err) {
-  console.error('RLS check failed:', err.message);
-  process.exit(1);
+// Tables dropped (so we can ignore them).
+const dropped = new Set(
+  [...combined.matchAll(/\bdrop\s+table\s+(?:if\s+exists\s+)?public\.(\w+)/gi)].map(
+    (m) => m[1],
+  ),
+);
+
+// Tables that have RLS turned on somewhere.
+const enabled = new Set(
+  [
+    ...combined.matchAll(
+      /\balter\s+table\s+(?:only\s+)?public\.(\w+)\s+enable\s+row\s+level\s+security/gi,
+    ),
+  ].map((m) => m[1]),
+);
+
+const missing = [...new Set(created)].filter(
+  (t) => !dropped.has(t) && !enabled.has(t),
+);
+
+if (missing.length === 0) {
+  const checked = new Set(created);
+  dropped.forEach((d) => checked.delete(d));
+  console.log(`✓ RLS enabled on all ${checked.size} public table(s).`);
+  process.exit(0);
 }
+
+console.error('✗ Tables without RLS enabled in any migration:');
+missing.forEach((t) => console.error(`   - public.${t}`));
+console.error(
+  '\n  Add to a new migration:\n' +
+    '    alter table public.<tablename> enable row level security;\n' +
+    '  …plus appropriate policies. The anon key is client-side, so\n' +
+    '  un-RLSed tables are a public data leak.',
+);
+process.exit(1);

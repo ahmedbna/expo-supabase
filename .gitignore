@@ -30,7 +30,7 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
+# local env files (contain DB password — never commit)
 .env*.local
 
 # typescript
@@ -42,5 +42,8 @@ app-example
 /ios
 /android
 
-
 package-lock.json
+
+# Supabase CLI internal state
+supabase/.temp/
+supabase/.branches/

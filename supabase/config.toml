@@ -1,52 +1,41 @@
 project_id = "bna"
 
+# These [api], [db.pooler], [storage], etc. blocks are mostly for
+# local development if you ever opt into running the local stack.
+# `supabase config push` only sends auth/api/storage settings to the
+# remote project — Postgres-internal options stay local.
+
 [api]
 enabled = true
-port = 54321
 schemas = ["public"]
 extra_search_path = ["public", "extensions"]
 max_rows = 1000
 
-[db]
-port = 54322
-shadow_port = 54320
-major_version = 15
-
-[db.pooler]
-enabled = false
-port = 54329
-pool_mode = "transaction"
-default_pool_size = 20
-max_client_conn = 100
-
 [realtime]
 enabled = true
-
-[studio]
-enabled = true
-port = 54323
-api_url = "http://127.0.0.1"
-
-[inbucket]
-enabled = true
-port = 54324
-smtp_port = 54325
-pop3_port = 54326
 
 [storage]
 enabled = true
 file_size_limit = "50MiB"
 
+# ─── Auth ────────────────────────────────────────────────────────────
+# These ARE pushed to your hosted project by `supabase config push`,
+# so this is your source of truth instead of the dashboard.
+
 [auth]
 enabled = true
+# Replace with your real production URL once you have one (e.g.
+# `https://yourapp.com`). For RN-only deployments, keep the deeplink.
 site_url = "bna://"
 additional_redirect_urls = ["bna://*", "exp://*", "http://localhost:8081"]
 jwt_expiry = 3600
 enable_refresh_token_rotation = true
 refresh_token_reuse_interval = 10
 enable_signup = true
+# Anonymous sign-ins are enabled here. Once `npm run dev` runs
+# `supabase config push`, your hosted project allows them too.
 enable_anonymous_sign_ins = true
-enable_manual_linking = false
+enable_manual_linking = true   # required to upgrade anon → permanent
 
 [auth.email]
 enable_signup = true
@@ -54,17 +43,26 @@ double_confirm_changes = true
 enable_confirmations = false
 secure_password_change = false
 
-# Uncomment and set env vars when ready for production
+[auth.rate_limit]
+# Defaults are fine but called out here as a knob you can tune.
+anonymous_users = 30   # per hour per IP
+sign_in_sign_ups = 30
+token_refresh = 150
+
+# Uncomment + fill in to add OAuth providers. After uncommenting,
+# saving will trigger `supabase config push` and the provider
+# becomes live on the remote project.
+#
 # [auth.external.google]
 # enabled = true
 # client_id = "env(GOOGLE_CLIENT_ID)"
-# secret   = "env(GOOGLE_CLIENT_SECRET)"
+# secret    = "env(GOOGLE_CLIENT_SECRET)"
 # redirect_uri = ""
-
+#
 # [auth.external.apple]
 # enabled = true
 # client_id = "env(APPLE_CLIENT_ID)"
-# secret   = "env(APPLE_CLIENT_SECRET)"
+# secret    = "env(APPLE_CLIENT_SECRET)"
 # redirect_uri = ""
 
 [analytics]
