@@ -6,7 +6,7 @@
  *
  * It will:
  *   1. Make sure you're logged into the Supabase CLI (`supabase login`).
- *   2. Ask which Supabase project to use (or help you create one).
+ *   2. Ask whether to create a new project or connect to an existing one.
  *   3. Link this folder to that project.
  *   4. Write `.env.local` with the URL, anon key, project ref, and DB password.
  *   5. Push every migration in `supabase/migrations/`.
@@ -35,6 +35,7 @@ const c = {
   red: (s) => `\x1b[31m${s}\x1b[0m`,
   bold: (s) => `\x1b[1m${s}\x1b[0m`,
   dim: (s) => `\x1b[2m${s}\x1b[0m`,
+  inverse: (s) => `\x1b[7m${s}\x1b[0m`,
 };
 const log = (m) => console.log(`${c.cyan('→')} ${m}`);
 const ok = (m) => console.log(`${c.green('✓')} ${m}`);
@@ -44,34 +45,220 @@ const die = (m) => {
 };
 
 function ask(q, hidden = false) {
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-    if (hidden) {
-      // Mask password input.
-      const stdin = process.openStdin();
-      process.stdin.on('data', () => {});
+  // Plain (visible) input: stock readline behavior.
+  if (!hidden) {
+    return new Promise((resolve) => {
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      });
       rl.question(q, (a) => {
         rl.close();
         resolve(a.trim());
       });
-      // Hide the typed characters.
-      rl._writeToOutput = (s) => {
-        if (s.includes('\n') || s.includes('\r')) rl.output.write(s);
-      };
-    } else {
+    });
+  }
+
+  // Hidden input: print the prompt, then echo each typed/pasted
+  // character as a bullet so the user sees that input is registering.
+  // (Pasting a password should produce a row of bullets, not silence.)
+  return new Promise((resolve) => {
+    const stdin = process.stdin;
+    const stdout = process.stdout;
+    const isTTY = stdin.isTTY && stdout.isTTY;
+
+    // Non-TTY fallback: just read a line normally. There's no terminal
+    // to mask anyway (e.g. piped input in CI).
+    if (!isTTY) {
+      const rl = readline.createInterface({ input: stdin, output: stdout });
       rl.question(q, (a) => {
         rl.close();
         resolve(a.trim());
+      });
+      return;
+    }
+
+    stdout.write(q);
+
+    let buf = '';
+    const wasRaw = stdin.isRaw;
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding('utf8');
+
+    function cleanup() {
+      stdin.removeListener('data', onData);
+      stdin.setRawMode(wasRaw);
+      stdin.pause();
+    }
+
+    function onData(chunk) {
+      // A single chunk can contain many characters when the user pastes.
+      // Iterate by code point so we handle that and reject control codes
+      // we shouldn't echo (arrows, escape sequences, etc.).
+      for (const ch of chunk) {
+        // Ctrl+C
+        if (ch === '\u0003') {
+          cleanup();
+          stdout.write('\n');
+          process.exit(130);
+        }
+        // Enter / Return — submit
+        if (ch === '\r' || ch === '\n') {
+          cleanup();
+          stdout.write('\n');
+          return resolve(buf.trim());
+        }
+        // Backspace / Delete
+        if (ch === '\u0008' || ch === '\u007f') {
+          if (buf.length > 0) {
+            buf = buf.slice(0, -1);
+            // Erase one bullet visually.
+            stdout.write('\b \b');
+          }
+          continue;
+        }
+        // Skip any other control characters (escape sequences from
+        // arrow keys, function keys, bracketed-paste markers, etc.).
+        if (ch < ' ') continue;
+
+        buf += ch;
+        stdout.write('•');
+      }
+    }
+
+    stdin.on('data', onData);
+  });
+}
+
+/**
+ * Interactive arrow-key picker. Renders the list, lets the user move
+ * with ↑/↓ (or j/k), confirms with Enter, cancels with Ctrl+C / Esc / q.
+ *
+ * Falls back to a numbered prompt if the terminal isn't a TTY (e.g.,
+ * when this is run inside CI or piped output).
+ *
+ *   choices: [{ label: string, hint?: string, value: T }]
+ *
+ * Returns the selected `value` or null if the user cancelled.
+ */
+function selectFromList(title, choices) {
+  if (!choices.length) return Promise.resolve(null);
+
+  const isTTY = process.stdin.isTTY && process.stdout.isTTY;
+
+  // Numbered fallback for non-TTY environments.
+  if (!isTTY) {
+    console.log(`\n${title}`);
+    choices.forEach((ch, i) => {
+      const hint = ch.hint ? c.dim(`  ${ch.hint}`) : '';
+      console.log(`  ${i + 1}) ${ch.label}${hint}`);
+    });
+    return ask(`Enter number (1-${choices.length}): `).then((raw) => {
+      const n = parseInt(raw, 10);
+      if (!n || n < 1 || n > choices.length) return null;
+      return choices[n - 1].value;
+    });
+  }
+
+  return new Promise((resolve) => {
+    let index = 0;
+    const stdin = process.stdin;
+    const stdout = process.stdout;
+
+    function render(initial = false) {
+      if (!initial) {
+        // Move cursor up by (choices.length + 1) lines and clear.
+        stdout.write(`\x1b[${choices.length + 1}A`);
+      }
+      stdout.write(`${title}\n`);
+      choices.forEach((ch, i) => {
+        const pointer = i === index ? c.cyan('❯ ') : '  ';
+        const label = i === index ? c.cyan(ch.label) : ch.label;
+        const hint = ch.hint ? c.dim(`  ${ch.hint}`) : '';
+        // Clear the rest of the line before writing it.
+        stdout.write(`\x1b[2K${pointer}${label}${hint}\n`);
       });
     }
+
+    function cleanup() {
+      stdin.setRawMode(false);
+      stdin.pause();
+      stdin.removeListener('data', onData);
+      // Hide cursor reset; show cursor again.
+      stdout.write('\x1b[?25h');
+    }
+
+    function onData(buf) {
+      const key = buf.toString();
+
+      // Ctrl+C
+      if (key === '\u0003') {
+        cleanup();
+        stdout.write('\n');
+        process.exit(130);
+      }
+      // Esc or q — cancel
+      if (key === '\u001b' || key === 'q') {
+        cleanup();
+        stdout.write('\n');
+        return resolve(null);
+      }
+      // Enter
+      if (key === '\r' || key === '\n') {
+        cleanup();
+        // Re-render once with the selection highlighted in green to
+        // confirm the choice, then move on.
+        stdout.write(`\x1b[${choices.length + 1}A`);
+        stdout.write(`${title}\n`);
+        choices.forEach((ch, i) => {
+          const pointer = i === index ? c.green('✓ ') : '  ';
+          const label = i === index ? c.green(ch.label) : c.dim(ch.label);
+          const hint = ch.hint ? c.dim(`  ${ch.hint}`) : '';
+          stdout.write(`\x1b[2K${pointer}${label}${hint}\n`);
+        });
+        return resolve(choices[index].value);
+      }
+      // Arrow keys arrive as escape sequences: \x1b[A (up), \x1b[B (down)
+      if (key === '\u001b[A' || key === 'k') {
+        index = (index - 1 + choices.length) % choices.length;
+        render();
+        return;
+      }
+      if (key === '\u001b[B' || key === 'j') {
+        index = (index + 1) % choices.length;
+        render();
+        return;
+      }
+      // Number keys 1-9 jump directly.
+      const n = parseInt(key, 10);
+      if (!Number.isNaN(n) && n >= 1 && n <= choices.length) {
+        index = n - 1;
+        render();
+      }
+    }
+
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding('utf8');
+    stdin.on('data', onData);
+    // Hide cursor while picking.
+    stdout.write('\x1b[?25l');
+    render(true);
   });
 }
 
 function sh(cmd, opts = {}) {
   return execSync(cmd, { cwd: ROOT, encoding: 'utf8', ...opts });
+}
+
+function shQuiet(cmd, opts = {}) {
+  return execSync(cmd, {
+    cwd: ROOT,
+    encoding: 'utf8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+    ...opts,
+  });
 }
 
 // ─── 1. Login ───────────────────────────────────────────────────────
@@ -86,7 +273,9 @@ async function ensureLoggedIn() {
     return;
   }
   log('You need to log into the Supabase CLI first.');
-  console.log(c.dim('  This opens a browser to grant CLI access to your account.'));
+  console.log(
+    c.dim('  This opens a browser to grant CLI access to your account.'),
+  );
   const r2 = spawnSync('npx', ['supabase', 'login'], {
     cwd: ROOT,
     stdio: 'inherit',
@@ -95,58 +284,233 @@ async function ensureLoggedIn() {
   ok('Logged in');
 }
 
-// ─── 2. Pick or create a project ────────────────────────────────────
-async function pickProjectRef() {
-  // Show the user their existing projects, then ask which to use.
-  log('Fetching your Supabase projects…');
-  const out = sh('npx supabase projects list');
-  console.log('');
-  console.log(out);
-
-  let ref = await ask(
-    'Project ref to use (or leave blank to create a new one): ',
-  );
-
-  if (!ref) {
-    const orgsOut = sh('npx supabase orgs list');
-    console.log('');
-    console.log(orgsOut);
-    const orgId = await ask('Organization ID to create the project in: ');
-    if (!orgId) die('Organization ID required.');
-    const name = await ask('Project name: ');
-    const region = (await ask('Region (default: us-east-1): ')) || 'us-east-1';
-    const password = await ask('Database password (save this!): ');
-    if (!password) die('Database password required.');
-
-    log(`Creating project "${name}"…`);
-    const create = spawnSync(
-      'npx',
-      [
-        'supabase',
-        'projects',
-        'create',
-        name,
-        '--org-id',
-        orgId,
-        '--region',
-        region,
-        '--db-password',
-        password,
-      ],
-      { cwd: ROOT, stdio: 'inherit' },
-    );
-    if (create.status !== 0) die('Project creation failed.');
-
-    // Re-list and grab the newest one. Easier than parsing creation output.
-    const listed = sh('npx supabase projects list');
-    const match = listed.match(/\b([a-z]{20})\b/g);
-    if (!match || match.length === 0) die('Could not determine new project ref.');
-    ref = match[match.length - 1];
-    process.env.__INIT_DB_PASSWORD = password;
-    ok(`Created project ${ref}`);
+// ─── Helpers: list orgs and projects via CLI ────────────────────────
+function listOrganizations() {
+  // Try JSON first.
+  try {
+    const out = shQuiet('npx supabase orgs list -o json');
+    const parsed = JSON.parse(out);
+    if (Array.isArray(parsed)) {
+      return parsed
+        .map((o) => ({
+          id: o.id ?? o.slug ?? o.organization_id ?? o.org_id,
+          name: o.name ?? o.organization_name ?? '(unnamed)',
+        }))
+        .filter((o) => o.id);
+    }
+  } catch {
+    /* fall through to text parsing */
   }
 
-  return ref;
+  // Fallback: parse the table-formatted output.
+  // Typical shape:
+  //       ID         |     NAME
+  //   ----------------|---------------
+  //    abcdefghijkl  |  My Org
+  let raw;
+  try {
+    raw = shQuiet('npx supabase orgs list');
+  } catch {
+    return [];
+  }
+  const orgs = [];
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (/^[-|+\s]+$/.test(trimmed)) continue; // separator row
+    if (/^ID\b/i.test(trimmed)) continue; // header row
+    const parts = trimmed.split('|').map((p) => p.trim());
+    if (parts.length < 2) continue;
+    const [id, name] = parts;
+    if (!/^[a-z0-9-]{8,}$/i.test(id)) continue;
+    orgs.push({ id, name: name || '(unnamed)' });
+  }
+  return orgs;
+}
+
+function listProjects() {
+  try {
+    const out = shQuiet('npx supabase projects list -o json');
+    const parsed = JSON.parse(out);
+    if (Array.isArray(parsed)) {
+      return parsed
+        .map((p) => ({
+          ref: p.id ?? p.ref ?? p.project_ref,
+          name: p.name ?? '(unnamed)',
+          region: p.region ?? '',
+          orgId: p.organization_id ?? p.org_id ?? '',
+        }))
+        .filter((p) => p.ref);
+    }
+  } catch {
+    /* fall through */
+  }
+
+  let raw;
+  try {
+    raw = shQuiet('npx supabase projects list');
+  } catch {
+    return [];
+  }
+  const projects = [];
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (/^[-|+\s]+$/.test(trimmed)) continue;
+    if (/^(LINKED|ORG ID|REFERENCE ID|NAME|REGION|CREATED AT)/i.test(trimmed))
+      continue;
+    const parts = trimmed.split('|').map((p) => p.trim());
+    // Find the first 20-char-ish slug as the project ref.
+    const ref = parts.find((p) => /^[a-z]{20}$/.test(p));
+    if (!ref) continue;
+    // Best-effort name guess: pick the first non-id, non-region column.
+    const name =
+      parts.find(
+        (p) =>
+          p &&
+          p !== ref &&
+          !/^[a-z0-9-]{20,}$/.test(p) &&
+          !/^(us|eu|ap|sa|af)-/i.test(p),
+      ) ?? '(unnamed)';
+    projects.push({ ref, name, region: '', orgId: '' });
+  }
+  return projects;
+}
+
+// ─── 2. Pick or create a project ────────────────────────────────────
+async function pickProjectRef() {
+  const mode = await selectFromList(
+    'How do you want to set up your Supabase project?',
+    [
+      {
+        label: 'Create a new project',
+        hint: '(we will create one in your account)',
+        value: 'create',
+      },
+      {
+        label: 'Connect to an existing project',
+        hint: '(pick from your projects, or paste a ref)',
+        value: 'existing',
+      },
+    ],
+  );
+
+  if (mode === null) die('Cancelled.');
+
+  if (mode === 'existing') {
+    return await pickExistingProjectRef();
+  }
+  return await createNewProject();
+}
+
+async function pickExistingProjectRef() {
+  log('Fetching your Supabase projects…');
+  const projects = listProjects();
+
+  if (projects.length === 0) {
+    console.log(
+      c.yellow(
+        '  No projects found in your account. Falling back to manual ref entry.',
+      ),
+    );
+    const ref = await ask('Project ref: ');
+    if (!ref) die('Project ref required.');
+    return ref;
+  }
+
+  const choices = projects.map((p) => ({
+    label: p.name,
+    hint: `(${p.ref})`,
+    value: p.ref,
+  }));
+  // Always offer a "paste ref manually" escape hatch — useful if the
+  // project belongs to an org the user just got invited to and the
+  // listing hasn't refreshed.
+  choices.push({
+    label: 'Enter project ref manually',
+    hint: '(paste a ref from the dashboard URL)',
+    value: '__manual__',
+  });
+
+  const picked = await selectFromList('Pick a project to connect to:', choices);
+  if (picked === null) die('Cancelled.');
+
+  if (picked === '__manual__') {
+    const ref = await ask('Project ref: ');
+    if (!ref) die('Project ref required.');
+    return ref;
+  }
+
+  const found = projects.find((p) => p.ref === picked);
+  ok(`Selected ${found?.name ?? picked} (${picked})`);
+  return picked;
+}
+
+async function createNewProject() {
+  log('Fetching your organizations…');
+  const orgs = listOrganizations();
+
+  let orgId;
+  if (orgs.length === 0) {
+    console.log(
+      c.yellow(
+        '  Could not list organizations automatically. You can still enter one manually.',
+      ),
+    );
+    orgId = await ask('Organization ID: ');
+    if (!orgId) die('Organization ID required.');
+  } else {
+    const choices = orgs.map((o) => ({
+      label: o.name,
+      hint: `(${o.id})`,
+      value: o.id,
+    }));
+    const picked = await selectFromList(
+      'Which organization should own the new project?',
+      choices,
+    );
+    if (picked === null) die('Cancelled.');
+    orgId = picked;
+    const found = orgs.find((o) => o.id === orgId);
+    ok(`Selected ${found?.name ?? orgId}`);
+  }
+
+  const name = await ask('Project name: ');
+  if (!name) die('Project name required.');
+
+  const region = (await ask('Region (default: us-east-1): ')) || 'us-east-1';
+
+  const password = await ask('Database password (save this!): ');
+  if (!password) die('Database password required.');
+
+  log(`Creating project "${name}"…`);
+  const create = spawnSync(
+    'npx',
+    [
+      'supabase',
+      'projects',
+      'create',
+      name,
+      '--org-id',
+      orgId,
+      '--region',
+      region,
+      '--db-password',
+      password,
+    ],
+    { cwd: ROOT, stdio: 'inherit' },
+  );
+  if (create.status !== 0) die('Project creation failed.');
+
+  // Re-list and grab the newest one. Easier than parsing creation output.
+  const after = listProjects();
+  // Prefer a project whose name matches what we just created.
+  const created = after.find((p) => p.name === name) ?? after[after.length - 1];
+  if (!created) die('Could not determine new project ref.');
+
+  process.env.__INIT_DB_PASSWORD = password;
+  ok(`Created project ${created.ref}`);
+  return created.ref;
 }
 
 // ─── 3. Link ────────────────────────────────────────────────────────
@@ -201,8 +565,12 @@ async function writeEnvLocal(ref, password) {
   // Fall back to scraping the table-formatted output.
   if (!anonKey) {
     const out = sh(`npx supabase projects api-keys --project-ref ${ref}`);
-    const anonLine = out.split('\n').find((l) => /\banon\b|\bpublishable\b/i.test(l));
-    anonKey = anonLine?.match(/\b(sb_publishable_[A-Za-z0-9_]+|eyJ[A-Za-z0-9_.\-]+)\b/)?.[1];
+    const anonLine = out
+      .split('\n')
+      .find((l) => /\banon\b|\bpublishable\b/i.test(l));
+    anonKey = anonLine?.match(
+      /\b(sb_publishable_[A-Za-z0-9_]+|eyJ[A-Za-z0-9_.\-]+)\b/,
+    )?.[1];
   }
 
   if (!anonKey) die('Could not parse anon/publishable key from CLI output.');
@@ -276,7 +644,9 @@ function generateTypes() {
     fs.writeFileSync(path.join(ROOT, 'supabase', 'types.ts'), header + types);
     ok('Types generated');
   } catch {
-    console.warn(`${c.yellow('!')} Types generation failed — fix and retry with: npm run db:types`);
+    console.warn(
+      `${c.yellow('!')} Types generation failed — fix and retry with: npm run db:types`,
+    );
   }
 }
 
@@ -285,7 +655,7 @@ function generateTypes() {
   console.log(c.bold('\nBNA Supabase — first-time setup\n'));
   console.log(
     c.dim(
-      "  No Docker needed. Everything you build will live in your hosted\n" +
+      '  No Docker needed. Everything you build will live in your hosted\n' +
         '  Supabase project, kept in sync from this folder.\n',
     ),
   );
